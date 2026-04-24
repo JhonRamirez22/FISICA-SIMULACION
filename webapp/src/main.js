@@ -13,6 +13,8 @@ const octx = overlay.getContext('2d');
 
 const startStopBtn = document.getElementById('startStopBtn');
 const resetBtn = document.getElementById('resetBtn');
+const resetPositiveBtn = document.getElementById('resetPositiveBtn');
+const recordBtn = document.getElementById('recordBtn');
 const saveInitialBtn = document.getElementById('saveInitialBtn');
 const exportLogBtn = document.getElementById('exportLogBtn');
 const showInitialToggle = document.getElementById('showInitialToggle');
@@ -140,6 +142,68 @@ const energyPlot = new EnergyPlot(document.getElementById('energyCanvas'));
 let running = false;
 let dragIndex = -1;
 let frameCounter = 0;
+
+// Video recording state
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+
+// --- Video recording via MediaRecorder API ---
+function startRecording() {
+  // Composite: render a merged frame of WebGL + overlay canvas into an offscreen canvas
+  // then stream that. Simpler: stream the WebGL canvas directly (overlay is separate).
+  // We use a merged canvas so the field vectors are included in the video.
+  const mergedCanvas = document.createElement('canvas');
+  mergedCanvas.width = renderer.domElement.width;
+  mergedCanvas.height = renderer.domElement.height;
+  const mctx = mergedCanvas.getContext('2d');
+
+  // Hook into the animation loop to composite frames into mergedCanvas
+  window._recordMerge = function () {
+    mergedCanvas.width = renderer.domElement.width;
+    mergedCanvas.height = renderer.domElement.height;
+    mctx.drawImage(renderer.domElement, 0, 0);
+    // Scale overlay (it may have different DPR dimensions)
+    mctx.drawImage(overlay, 0, 0, mergedCanvas.width, mergedCanvas.height);
+  };
+
+  const stream = mergedCanvas.captureStream(30);
+  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+    ? 'video/webm;codecs=vp9'
+    : 'video/webm';
+
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 4_000_000 });
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
+  mediaRecorder.onstop = () => {
+    const blob = new Blob(recordedChunks, { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `electrosim_video_${makeTimestampTag()}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    window._recordMerge = null;
+    recordBtn.textContent = '⏺ Grabar';
+    recordBtn.style.borderColor = '';
+    isRecording = false;
+  };
+
+  mediaRecorder.start(200); // chunk cada 200ms
+  isRecording = true;
+  recordBtn.textContent = '⏹ Detener';
+  recordBtn.style.borderColor = '#ff4444';
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+}
 
 function makeTimestampTag() {
   const d = new Date();
@@ -595,6 +659,23 @@ resetBtn.addEventListener('click', () => {
   fullRefresh();
 });
 
+// Etapa 1: reinicia con 50 cargas todas positivas para observar repulsión pura
+resetPositiveBtn.addEventListener('click', () => {
+  running = false;
+  startStopBtn.textContent = 'Start';
+  sim.resetPositive(50);
+  updateInitialBuffers();
+  fullRefresh();
+});
+
+recordBtn.addEventListener('click', () => {
+  if (!isRecording) {
+    startRecording();
+  } else {
+    stopRecording();
+  }
+});
+
 saveInitialBtn.addEventListener('click', () => {
   sim.saveInitialState();
   updateInitialBuffers();
@@ -632,6 +713,8 @@ function animate() {
 
   drawVectorOverlay();
   renderer.render(scene, camera);
+  // Composite WebGL + vector overlay into the recording stream if active
+  if (window._recordMerge) window._recordMerge();
 }
 
 window.addEventListener('resize', resize);

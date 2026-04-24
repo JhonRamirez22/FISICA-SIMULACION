@@ -52,6 +52,24 @@ export class ChargeSimulation {
     this.saveInitialState();
   }
 
+  // Etapa 1 del proyecto: solo cargas positivas para observar repulsión pura
+  resetPositive(n = 50) {
+    this.positions = [];
+    this.charges = [];
+    for (let i = 0; i < n; i += 1) {
+      this.positions.push([
+        lerp(-this.domain, this.domain, this._rng()),
+        lerp(-this.domain, this.domain, this._rng()),
+      ]);
+      this.charges.push(1);
+    }
+    this.totalEnergy = this.computeTotalEnergy();
+    this.energyHistory = [this.totalEnergy];
+    this.acceptedMoves = 0;
+    this.totalMoves = 0;
+    this.saveInitialState();
+  }
+
   computeTotalEnergy() {
     let energy = 0;
     const n = this.positions.length;
