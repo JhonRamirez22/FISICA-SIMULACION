@@ -15,6 +15,8 @@ const startStopBtn = document.getElementById('startStopBtn');
 const resetBtn = document.getElementById('resetBtn');
 const resetPositiveBtn = document.getElementById('resetPositiveBtn');
 const recordBtn = document.getElementById('recordBtn');
+const floatingRecordBtn = document.getElementById('floatingRecordBtn');
+const floatingRecordStatus = document.getElementById('floatingRecordStatus');
 const saveInitialBtn = document.getElementById('saveInitialBtn');
 const exportLogBtn = document.getElementById('exportLogBtn');
 const showInitialToggle = document.getElementById('showInitialToggle');
@@ -165,6 +167,22 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let isRecording = false;
 
+function syncRecordButtonsUI() {
+  const label = isRecording ? '⏹ Detener' : '⏺ Grabar';
+  recordBtn.textContent = label;
+  floatingRecordBtn.textContent = isRecording ? '⏹ Detener video' : '⏺ Grabar video';
+
+  if (isRecording) {
+    recordBtn.style.borderColor = '#ff4444';
+    floatingRecordBtn.style.borderColor = '#ff4444';
+    floatingRecordStatus.textContent = 'Estado: grabando…';
+  } else {
+    recordBtn.style.borderColor = '';
+    floatingRecordBtn.style.borderColor = '';
+    floatingRecordStatus.textContent = 'Estado: listo';
+  }
+}
+
 // --- Video recording via MediaRecorder API ---
 function startRecording() {
   // Composite: render a merged frame of WebGL + overlay canvas into an offscreen canvas
@@ -205,15 +223,13 @@ function startRecording() {
     a.remove();
     URL.revokeObjectURL(url);
     window._recordMerge = null;
-    recordBtn.textContent = '⏺ Grabar';
-    recordBtn.style.borderColor = '';
     isRecording = false;
+    syncRecordButtonsUI();
   };
 
   mediaRecorder.start(200); // chunk cada 200ms
   isRecording = true;
-  recordBtn.textContent = '⏹ Detener';
-  recordBtn.style.borderColor = '#ff4444';
+  syncRecordButtonsUI();
 }
 
 function stopRecording() {
@@ -403,7 +419,7 @@ Regla de aceptación base:
 
 $$
 \Delta U = U_{\text{nuevo}}-U_{\text{actual}},\qquad
-	ext{aceptar si }\Delta U<0
+  ext{aceptar si }\Delta U<0
 $$
 
 Cuando annealing está activo:
@@ -657,6 +673,47 @@ function drawProbeOverlay() {
   octx.fillText(probeState.q > 0 ? 'q_test = p+' : 'q_test = e−', sx + 10, sy - 8);
 }
 
+function drawSimulationConditionsPanel() {
+  const c = getTempCelsius();
+  const f = celsiusToFahrenheit(c);
+  const speedNow = Math.hypot(probeState.vel[0], probeState.vel[1]);
+  const lines = [
+    'Condiciones de simulación',
+    `T: ${c.toFixed(1)} °C | ${f.toFixed(1)} °F`,
+    `Δ movimiento: ${Number(deltaSlider.value).toFixed(2)}`,
+    `Pasos/frame: ${speedSlider.value}`,
+    `Annealing: ${annealToggle.checked ? 'ON' : 'OFF'} | T_model=${getTempForModel().toFixed(3)}`,
+    `Visualización: campo ${fieldToggle.checked ? 'ON' : 'OFF'} | potencial ${potentialToggle.checked ? 'ON' : 'OFF'}`,
+    `Cargas: ${sim.count()} | Aceptación: ${(sim.acceptanceRate() * 100).toFixed(2)}%`,
+    `Prueba q_test: ${probeState.active ? (probeState.q > 0 ? 'protón' : 'electrón') : 'inactiva'} | v=${speedNow.toFixed(3)} u/s`,
+  ];
+
+  const x = 12;
+  const y = 12;
+  const w = 420;
+  const h = 22 + lines.length * 18;
+
+  octx.save();
+  octx.fillStyle = 'rgba(7, 11, 18, 0.70)';
+  octx.strokeStyle = 'rgba(126, 152, 193, 0.46)';
+  octx.lineWidth = 1;
+  octx.beginPath();
+  octx.roundRect(x, y, w, h, 10);
+  octx.fill();
+  octx.stroke();
+
+  octx.font = '600 12px Segoe UI';
+  octx.textAlign = 'left';
+  octx.textBaseline = 'top';
+
+  for (let i = 0; i < lines.length; i += 1) {
+    octx.fillStyle = i === 0 ? 'rgba(170, 220, 255, 0.98)' : 'rgba(235, 242, 252, 0.95)';
+    octx.fillText(lines[i], x + 12, y + 9 + i * 18);
+  }
+
+  octx.restore();
+}
+
 function updateInitialBuffers() {
   const pos = initialGeometry.getAttribute('position').array;
   const col = initialGeometry.getAttribute('color').array;
@@ -763,6 +820,7 @@ function drawVectorOverlay() {
 
   drawChargeLabels();
   drawProbeOverlay();
+  drawSimulationConditionsPanel();
   octx.shadowBlur = 0;
 }
 
@@ -899,6 +957,14 @@ recordBtn.addEventListener('click', () => {
   }
 });
 
+floatingRecordBtn.addEventListener('click', () => {
+  if (!isRecording) {
+    startRecording();
+  } else {
+    stopRecording();
+  }
+});
+
 saveInitialBtn.addEventListener('click', () => {
   sim.saveInitialState();
   updateInitialBuffers();
@@ -945,6 +1011,7 @@ function animate() {
 window.addEventListener('resize', resize);
 applyTempSliderByUnit(tempUnitMode);
 resetProbe();
+syncRecordButtonsUI();
 resize();
 updateInitialBuffers();
 fullRefresh();
