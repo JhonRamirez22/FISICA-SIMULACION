@@ -294,31 +294,31 @@ $$
 ## 2) Modelo físico y criterio de aceptación
 
 $$
-U = \sum_{i<j} \frac{q_i q_j}{\lVert \mathbf{r}_i-\mathbf{r}_j \rVert}
+U = \sum_{i<j} \frac{q_i q_j}{\sqrt{(x_i-x_j)^2 + (y_i-y_j)^2}}
 $$
 
 $$
-V(\mathbf{r}) = \sum_i \frac{q_i}{\lVert \mathbf{r}-\mathbf{r}_i \rVert},
+V(x,y) = \sum_i \frac{q_i}{\sqrt{(x-x_i)^2 + (y-y_i)^2}},
 \qquad
-\mathbf{E}(\mathbf{r}) = \sum_i q_i\,\frac{\mathbf{r}-\mathbf{r}_i}{\lVert \mathbf{r}-\mathbf{r}_i \rVert^3}
+\vec{E}(x,y)=\sum_i q_i\,\frac{(x-x_i,\,y-y_i)}{\left[(x-x_i)^2 + (y-y_i)^2\right]^{3/2}}
 $$
 
 $$
-\mathbf{F}=q\,\mathbf{E},
+\vec{F}=q\,\vec{E},
 \qquad
-\Delta U = U_{nuevo} - U_{actual}
+\Delta U = U_{\mathrm{nuevo}} - U_{\mathrm{actual}}
 $$
 
 Regla principal:
 
 $$
-	ext{aceptar si }\Delta U < 0
+  ext{aceptar si }\Delta U < 0
 $$
 
 Con annealing:
 
 $$
-P_{aceptar}=e^{-\Delta U/T},\quad \Delta U>0
+P_{\mathrm{aceptar}}=e^{-\Delta U/T},\quad \Delta U>0
 $$
 
 ## 3) Resultados de la corrida
