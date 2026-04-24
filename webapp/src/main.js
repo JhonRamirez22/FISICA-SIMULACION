@@ -24,7 +24,10 @@ const potentialToggle = document.getElementById('potentialToggle');
 const fieldToggle = document.getElementById('fieldToggle');
 const annealToggle = document.getElementById('annealToggle');
 const tempSlider = document.getElementById('tempSlider');
+const tempUnit = document.getElementById('tempUnit');
 const newChargeSign = document.getElementById('newChargeSign');
+const toggleProbeBtn = document.getElementById('toggleProbeBtn');
+const probeChargeSign = document.getElementById('probeChargeSign');
 
 const deltaValue = document.getElementById('deltaValue');
 const speedValue = document.getElementById('speedValue');
@@ -32,6 +35,8 @@ const tempValue = document.getElementById('tempValue');
 const energyLabel = document.getElementById('energyLabel');
 const acceptanceLabel = document.getElementById('acceptanceLabel');
 const countLabel = document.getElementById('countLabel');
+const tempStatsLabel = document.getElementById('tempStatsLabel');
+const probeLabel = document.getElementById('probeLabel');
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -45,7 +50,7 @@ const scene = new THREE.Scene();
 const camera = new THREE.OrthographicCamera(-DOMAIN, DOMAIN, DOMAIN, -DOMAIN, 0.01, 100);
 camera.position.set(0, 0, 10);
 
-const sim = new ChargeSimulation({ n: 50, domain: DOMAIN, seed: 7 });
+const sim = new ChargeSimulation({ n: 0, domain: DOMAIN, seed: 7 });
 const gpuField = new GPUFieldRenderer(DOMAIN);
 scene.add(gpuField.mesh);
 
@@ -142,6 +147,18 @@ const energyPlot = new EnergyPlot(document.getElementById('energyCanvas'));
 let running = false;
 let dragIndex = -1;
 let frameCounter = 0;
+let tempUnitMode = tempUnit.value;
+
+const probeState = {
+  active: false,
+  q: -1,
+  pos: [0, 0],
+  vel: [0, 0],
+  path: [],
+  distance: 0,
+  elapsed: 0,
+  maxSpeed: 0,
+};
 
 // Video recording state
 let mediaRecorder = null;
@@ -224,6 +241,8 @@ function downloadTextFile(filename, content, mime) {
 }
 
 function buildSimulationLog() {
+  const c = getTempCelsius();
+  const f = celsiusToFahrenheit(c);
   return {
     meta: {
       savedAt: new Date().toISOString(),
@@ -234,7 +253,10 @@ function buildSimulationLog() {
       deltaMove: Number(deltaSlider.value),
       speedStepsPerFrame: Number(speedSlider.value),
       annealingEnabled: annealToggle.checked,
-      annealingTemperature: Number(tempSlider.value),
+      annealingTemperatureC: c,
+      annealingTemperatureF: f,
+      annealingTemperatureK: c + 273.15,
+      temperatureDisplayUnit: tempUnitMode,
       showPotential: potentialToggle.checked,
       showField: fieldToggle.checked,
     },
@@ -243,6 +265,15 @@ function buildSimulationLog() {
       acceptedMoves: sim.acceptedMoves,
       totalMoves: sim.totalMoves,
       acceptanceRate: sim.acceptanceRate(),
+    },
+    probe: {
+      active: probeState.active,
+      charge: probeState.q,
+      elapsed: probeState.elapsed,
+      distance: probeState.distance,
+      maxSpeed: probeState.maxSpeed,
+      finalPosition: [probeState.pos[0], probeState.pos[1]],
+      finalVelocity: [probeState.vel[0], probeState.vel[1]],
     },
     initialState: {
       positions: sim.initialPositions.map((p) => [p[0], p[1]]),
@@ -323,6 +354,9 @@ function buildMathReport(log) {
   const deltaE = ef - e0;
   const relDrop = Math.abs(e0) > 1e-12 ? ((e0 - ef) / Math.abs(e0)) * 100 : 0;
   const fields = computeSampledFieldStats(24);
+  const tc = log.controls.annealingTemperatureC;
+  const tf = log.controls.annealingTemperatureF;
+  const tk = log.controls.annealingTemperatureK;
 
   return String.raw`# Reporte matemático de simulación electrostática (2D)
 
@@ -335,6 +369,7 @@ function buildMathReport(log) {
 - Movimientos evaluados: ${log.stats.totalMoves}
 - Movimientos aceptados: ${log.stats.acceptedMoves}
 - Tasa de aceptación: ${(100 * log.stats.acceptanceRate).toFixed(3)}%
+- Temperatura de simulación: ${tc.toFixed(2)} °C | ${tf.toFixed(2)} °F | ${tk.toFixed(2)} K
 
 ## 2) Modelo físico usado
 
@@ -386,6 +421,9 @@ $$
 - Promedio muestral de $|\mathbf{E}|$: ${fields.avgE.toFixed(5)}
 - Máximo muestral de $|\mathbf{E}|$: ${fields.maxE.toFixed(5)}
 - Promedio muestral de $|V|$: ${fields.avgAbsV.toFixed(5)}
+- Partícula de prueba $q_{test}$: ${log.probe.charge > 0 ? '+1 (protón)' : '-1 (electrón)'}
+- Desplazamiento acumulado de prueba: ${log.probe.distance.toFixed(5)} u
+- Velocidad máxima observada: ${log.probe.maxSpeed.toFixed(5)} u/s
 
 ## 5) Interpretación breve
 
@@ -412,6 +450,69 @@ function resize() {
   overlay.width = Math.floor(w * dpr);
   overlay.height = Math.floor(h * dpr);
   octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function celsiusToFahrenheit(c) {
+  return (c * 9) / 5 + 32;
+}
+
+function fahrenheitToCelsius(f) {
+  return ((f - 32) * 5) / 9;
+}
+
+function getTempCelsius() {
+  const value = Number(tempSlider.value);
+  return tempUnitMode === 'C' ? value : fahrenheitToCelsius(value);
+}
+
+function getTempForModel() {
+  const kelvin = Math.max(getTempCelsius() + 273.15, 1e-6);
+  return kelvin / 300;
+}
+
+function applyTempSliderByUnit(nextUnit) {
+  const currentC = getTempCelsius();
+  tempUnitMode = nextUnit;
+
+  if (nextUnit === 'F') {
+    tempSlider.min = '-328';
+    tempSlider.max = '2192';
+    tempSlider.step = '1';
+    tempSlider.value = celsiusToFahrenheit(currentC).toFixed(0);
+  } else {
+    tempSlider.min = '-200';
+    tempSlider.max = '1200';
+    tempSlider.step = '1';
+    tempSlider.value = currentC.toFixed(0);
+  }
+}
+
+function resetProbe() {
+  probeState.active = false;
+  probeState.q = Number(probeChargeSign.value);
+  probeState.pos = [0, 0];
+  probeState.vel = [0, 0];
+  probeState.path = [];
+  probeState.distance = 0;
+  probeState.elapsed = 0;
+  probeState.maxSpeed = 0;
+  toggleProbeBtn.textContent = 'Iniciar prueba q_test';
+}
+
+function toggleProbe() {
+  if (!probeState.active) {
+    probeState.active = true;
+    probeState.q = Number(probeChargeSign.value);
+    probeState.pos = [0, 0];
+    probeState.vel = [0, 0];
+    probeState.path = [[0, 0]];
+    probeState.distance = 0;
+    probeState.elapsed = 0;
+    probeState.maxSpeed = 0;
+    toggleProbeBtn.textContent = 'Detener prueba q_test';
+  } else {
+    resetProbe();
+  }
 }
 
 function worldFromPointer(ev) {
@@ -464,6 +565,96 @@ function updateChargeBuffers() {
   chargeGeometry.getAttribute('color').needsUpdate = true;
 
   gpuField.updateCharges(sim.positions, sim.charges);
+}
+
+function drawChargeLabels() {
+  if (sim.positions.length > 140) return;
+  octx.font = 'bold 11px Segoe UI';
+  octx.textAlign = 'center';
+  octx.textBaseline = 'middle';
+
+  for (let i = 0; i < sim.positions.length; i += 1) {
+    const [sx, sy] = worldToScreen(sim.positions[i][0], sim.positions[i][1]);
+    const isProton = sim.charges[i] > 0;
+    octx.fillStyle = isProton ? 'rgba(255, 221, 221, 0.95)' : 'rgba(220, 235, 255, 0.95)';
+    octx.fillText(isProton ? 'p+' : 'e−', sx, sy + 0.5);
+  }
+}
+
+function stepProbe() {
+  if (!probeState.active) return;
+
+  const [ex, ey] = computeFieldAt(probeState.pos[0], probeState.pos[1]);
+  const dt = 0.014;
+  const damping = 0.992;
+  const accelScale = 0.75;
+
+  const ax = probeState.q * ex * accelScale;
+  const ay = probeState.q * ey * accelScale;
+
+  probeState.vel[0] = (probeState.vel[0] + ax * dt) * damping;
+  probeState.vel[1] = (probeState.vel[1] + ay * dt) * damping;
+
+  const speed = Math.hypot(probeState.vel[0], probeState.vel[1]);
+  const vmax = 7.5;
+  if (speed > vmax) {
+    const s = vmax / speed;
+    probeState.vel[0] *= s;
+    probeState.vel[1] *= s;
+  }
+
+  const oldX = probeState.pos[0];
+  const oldY = probeState.pos[1];
+  probeState.pos[0] += probeState.vel[0] * dt;
+  probeState.pos[1] += probeState.vel[1] * dt;
+
+  if (probeState.pos[0] < -DOMAIN || probeState.pos[0] > DOMAIN) {
+    probeState.vel[0] *= -0.65;
+    probeState.pos[0] = Math.max(-DOMAIN, Math.min(DOMAIN, probeState.pos[0]));
+  }
+  if (probeState.pos[1] < -DOMAIN || probeState.pos[1] > DOMAIN) {
+    probeState.vel[1] *= -0.65;
+    probeState.pos[1] = Math.max(-DOMAIN, Math.min(DOMAIN, probeState.pos[1]));
+  }
+
+  const ds = Math.hypot(probeState.pos[0] - oldX, probeState.pos[1] - oldY);
+  probeState.distance += ds;
+  probeState.elapsed += dt;
+  probeState.maxSpeed = Math.max(probeState.maxSpeed, Math.hypot(probeState.vel[0], probeState.vel[1]));
+
+  probeState.path.push([probeState.pos[0], probeState.pos[1]]);
+  if (probeState.path.length > 220) probeState.path.shift();
+}
+
+function drawProbeOverlay() {
+  if (!probeState.active) return;
+
+  if (probeState.path.length > 1) {
+    octx.beginPath();
+    for (let i = 0; i < probeState.path.length; i += 1) {
+      const [sx, sy] = worldToScreen(probeState.path[i][0], probeState.path[i][1]);
+      if (i === 0) octx.moveTo(sx, sy);
+      else octx.lineTo(sx, sy);
+    }
+    octx.strokeStyle = probeState.q > 0 ? 'rgba(255, 170, 170, 0.75)' : 'rgba(140, 185, 255, 0.75)';
+    octx.lineWidth = 2;
+    octx.stroke();
+  }
+
+  const [sx, sy] = worldToScreen(probeState.pos[0], probeState.pos[1]);
+  octx.beginPath();
+  octx.arc(sx, sy, 7, 0, Math.PI * 2);
+  octx.fillStyle = probeState.q > 0 ? 'rgba(255,80,80,0.95)' : 'rgba(70,130,255,0.95)';
+  octx.fill();
+  octx.strokeStyle = 'rgba(255,255,255,0.95)';
+  octx.lineWidth = 1.5;
+  octx.stroke();
+
+  octx.fillStyle = 'rgba(255,255,255,0.95)';
+  octx.font = 'bold 12px Segoe UI';
+  octx.textAlign = 'left';
+  octx.textBaseline = 'bottom';
+  octx.fillText(probeState.q > 0 ? 'q_test = p+' : 'q_test = e−', sx + 10, sy - 8);
 }
 
 function updateInitialBuffers() {
@@ -520,72 +711,88 @@ function drawVectorOverlay() {
   const w = viewport.clientWidth;
   const h = viewport.clientHeight;
   octx.clearRect(0, 0, w, h);
-  if (!fieldToggle.checked) return;
+  if (fieldToggle.checked) {
 
-  const gridN = 16;
-  const step = (2 * DOMAIN) / (gridN - 1);
-  octx.lineCap = 'round';
-  octx.lineJoin = 'round';
+    const gridN = 16;
+    const step = (2 * DOMAIN) / (gridN - 1);
+    octx.lineCap = 'round';
+    octx.lineJoin = 'round';
 
-  for (let iy = 0; iy < gridN; iy += 1) {
-    for (let ix = 0; ix < gridN; ix += 1) {
+    for (let iy = 0; iy < gridN; iy += 1) {
+      for (let ix = 0; ix < gridN; ix += 1) {
       const wx = -DOMAIN + ix * step;
       const wy = -DOMAIN + iy * step;
       const [ex, ey] = computeFieldAt(wx, wy);
       const mag = Math.hypot(ex, ey);
       if (mag < 0.08) continue;
 
-      const ux = ex / mag;
-      const uy = ey / mag;
-  const scale = Math.min(0.62, 0.10 + Math.pow(mag, 0.55) * 0.07);
+        const ux = ex / mag;
+        const uy = ey / mag;
+        const scale = Math.min(0.62, 0.10 + Math.pow(mag, 0.55) * 0.07);
       const x2 = wx + ux * scale;
       const y2 = wy + uy * scale;
 
-  const [sx1, sy1] = worldToScreen(wx, wy);
-  const [sx2, sy2] = worldToScreen(x2, y2);
-  const intensity = Math.min(1, 0.22 + Math.pow(mag, 0.45) * 0.34);
-  const hue = 195 - Math.min(85, mag * 8.0);
-  const stroke = `hsla(${hue}, 100%, 72%, ${0.30 + 0.55 * intensity})`;
-  const ah = 5.5 + 2.5 * intensity;
+    const [sx1, sy1] = worldToScreen(wx, wy);
+    const [sx2, sy2] = worldToScreen(x2, y2);
+    const intensity = Math.min(1, 0.22 + Math.pow(mag, 0.45) * 0.34);
+    const hue = 195 - Math.min(85, mag * 8.0);
+    const stroke = `hsla(${hue}, 100%, 72%, ${0.30 + 0.55 * intensity})`;
+    const ah = 5.5 + 2.5 * intensity;
 
-  octx.strokeStyle = stroke;
-  octx.fillStyle = stroke;
-  octx.shadowColor = `hsla(${hue}, 95%, 65%, ${0.22 + 0.2 * intensity})`;
-  octx.shadowBlur = 5.5 * intensity;
-  octx.lineWidth = 0.9 + 1.3 * intensity;
+    octx.strokeStyle = stroke;
+    octx.fillStyle = stroke;
+    octx.shadowColor = `hsla(${hue}, 95%, 65%, ${0.22 + 0.2 * intensity})`;
+    octx.shadowBlur = 5.5 * intensity;
+    octx.lineWidth = 0.9 + 1.3 * intensity;
 
-      octx.beginPath();
-      octx.moveTo(sx1, sy1);
-      octx.lineTo(sx2, sy2);
-      octx.stroke();
+        octx.beginPath();
+        octx.moveTo(sx1, sy1);
+        octx.lineTo(sx2, sy2);
+        octx.stroke();
 
-      const ang = Math.atan2(sy2 - sy1, sx2 - sx1);
-      octx.beginPath();
-      octx.moveTo(sx2, sy2);
-      octx.lineTo(sx2 - ah * Math.cos(ang - Math.PI / 6), sy2 - ah * Math.sin(ang - Math.PI / 6));
-      octx.lineTo(sx2 - ah * Math.cos(ang + Math.PI / 6), sy2 - ah * Math.sin(ang + Math.PI / 6));
-      octx.closePath();
-      octx.fill();
+        const ang = Math.atan2(sy2 - sy1, sx2 - sx1);
+        octx.beginPath();
+        octx.moveTo(sx2, sy2);
+        octx.lineTo(sx2 - ah * Math.cos(ang - Math.PI / 6), sy2 - ah * Math.sin(ang - Math.PI / 6));
+        octx.lineTo(sx2 - ah * Math.cos(ang + Math.PI / 6), sy2 - ah * Math.sin(ang + Math.PI / 6));
+        octx.closePath();
+        octx.fill();
+      }
     }
   }
 
+  drawChargeLabels();
+  drawProbeOverlay();
   octx.shadowBlur = 0;
 }
 
 function updateStats() {
+  const c = getTempCelsius();
+  const f = celsiusToFahrenheit(c);
+  const k = c + 273.15;
+
   energyLabel.textContent = `U: ${sim.totalEnergy.toFixed(4)}`;
   acceptanceLabel.textContent = `Aceptación: ${(sim.acceptanceRate() * 100).toFixed(2)}%`;
   countLabel.textContent = `Cargas: ${sim.count()}`;
   deltaValue.textContent = Number(deltaSlider.value).toFixed(2);
   speedValue.textContent = speedSlider.value;
-  tempValue.textContent = Number(tempSlider.value).toFixed(3);
+  tempValue.textContent = tempUnitMode === 'C'
+    ? `${c.toFixed(1)} °C / ${f.toFixed(1)} °F`
+    : `${f.toFixed(1)} °F / ${c.toFixed(1)} °C`;
+  tempStatsLabel.textContent = `T: ${c.toFixed(1)} °C | ${f.toFixed(1)} °F | ${k.toFixed(2)} K`;
+  if (probeState.active) {
+    const speed = Math.hypot(probeState.vel[0], probeState.vel[1]);
+    probeLabel.textContent = `Prueba: ${probeState.q > 0 ? 'protón' : 'electrón'} | v=${speed.toFixed(3)} u/s | d=${probeState.distance.toFixed(3)} u | t=${probeState.elapsed.toFixed(2)} s`;
+  } else {
+    probeLabel.textContent = 'Prueba: inactiva';
+  }
 }
 
 function runMCFrame() {
   const steps = Number(speedSlider.value);
   const delta = Number(deltaSlider.value);
   const anneal = annealToggle.checked;
-  const t0 = Number(tempSlider.value);
+  const t0 = getTempForModel();
 
   for (let i = 0; i < steps; i += 1) {
     const decay = Math.exp(-sim.totalMoves * 0.00002);
@@ -655,6 +862,7 @@ resetBtn.addEventListener('click', () => {
   running = false;
   startStopBtn.textContent = 'Start';
   sim.resetRandom(50);
+  resetProbe();
   updateInitialBuffers();
   fullRefresh();
 });
@@ -664,8 +872,23 @@ resetPositiveBtn.addEventListener('click', () => {
   running = false;
   startStopBtn.textContent = 'Start';
   sim.resetPositive(50);
+  resetProbe();
   updateInitialBuffers();
   fullRefresh();
+});
+
+toggleProbeBtn.addEventListener('click', () => {
+  toggleProbe();
+  updateStats();
+});
+
+probeChargeSign.addEventListener('change', () => {
+  if (!probeState.active) probeState.q = Number(probeChargeSign.value);
+});
+
+tempUnit.addEventListener('change', () => {
+  applyTempSliderByUnit(tempUnit.value);
+  updateStats();
 });
 
 recordBtn.addEventListener('click', () => {
@@ -705,6 +928,8 @@ function animate() {
     updateChargeBuffers();
   }
 
+  stepProbe();
+
   frameCounter += 1;
   if (frameCounter % 2 === 0) {
     updateStats();
@@ -718,6 +943,8 @@ function animate() {
 }
 
 window.addEventListener('resize', resize);
+applyTempSliderByUnit(tempUnitMode);
+resetProbe();
 resize();
 updateInitialBuffers();
 fullRefresh();
