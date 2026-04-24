@@ -150,6 +150,9 @@ let running = false;
 let dragIndex = -1;
 let frameCounter = 0;
 let tempUnitMode = tempUnit.value;
+let currentRecordingStamp = null;
+let pendingAfterRecordingExport = null;
+let runSession = null;
 
 const probeState = {
   active: false,
@@ -168,9 +171,9 @@ let recordedChunks = [];
 let isRecording = false;
 
 function syncRecordButtonsUI() {
-  const label = isRecording ? '⏹ Detener' : '⏺ Grabar';
+  const label = running ? '⏹ Finalizar run' : '⏺ Rec + datos';
   recordBtn.textContent = label;
-  floatingRecordBtn.textContent = isRecording ? '⏹ Detener video' : '⏺ Grabar video';
+  floatingRecordBtn.textContent = running ? '⏹ Finalizar run' : '⏺ Grabar video + informe';
 
   if (isRecording) {
     recordBtn.style.borderColor = '#ff4444';
@@ -184,7 +187,12 @@ function syncRecordButtonsUI() {
 }
 
 // --- Video recording via MediaRecorder API ---
-function startRecording() {
+function startRecording(stamp) {
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error('MediaRecorder no soportado en este navegador.');
+  }
+
+  currentRecordingStamp = stamp;
   // Composite: render a merged frame of WebGL + overlay canvas into an offscreen canvas
   // then stream that. Simpler: stream the WebGL canvas directly (overlay is separate).
   // We use a merged canvas so the field vectors are included in the video.
@@ -217,14 +225,20 @@ function startRecording() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `electrosim_video_${makeTimestampTag()}.webm`;
+    a.download = `electrosim_video_${currentRecordingStamp ?? makeTimestampTag()}.webm`;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
     window._recordMerge = null;
     isRecording = false;
+    currentRecordingStamp = null;
     syncRecordButtonsUI();
+    if (pendingAfterRecordingExport) {
+      const cb = pendingAfterRecordingExport;
+      pendingAfterRecordingExport = null;
+      cb();
+    }
   };
 
   mediaRecorder.start(200); // chunk cada 200ms
@@ -232,10 +246,207 @@ function startRecording() {
   syncRecordButtonsUI();
 }
 
-function stopRecording() {
+function stopRecording(onAfterStop = null) {
+  if (onAfterStop) {
+    pendingAfterRecordingExport = onAfterStop;
+  }
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     mediaRecorder.stop();
+  } else if (onAfterStop) {
+    const cb = pendingAfterRecordingExport;
+    pendingAfterRecordingExport = null;
+    cb();
   }
+}
+
+function buildRunReportMarkdown(summary) {
+  return String.raw`# Informe automático de corrida (Start/Stop) — ElectroSim 2D
+
+## 1) Condiciones impuestas al iniciar
+
+- Inicio de corrida: ${summary.startedAt}
+- Fin de corrida: ${summary.endedAt}
+- Duración: ${summary.durationSec.toFixed(2)} s
+- Dominio: $[-L,L]^2$ con $L=${summary.domain}$
+- Número de cargas al inicio: ${summary.particleCountStart}
+- Número de cargas al final: ${summary.particleCountEnd}
+
+### Control térmico
+
+- Temperatura inicial: ${summary.tempC.toFixed(2)} °C | ${summary.tempF.toFixed(2)} °F | ${summary.tempK.toFixed(2)} K
+- Conversión usada:
+
+$$
+T_{\mathrm{F}} = \frac{9}{5}T_{\mathrm{C}} + 32,
+\qquad
+T_{\mathrm{K}} = T_{\mathrm{C}} + 273.15
+$$
+
+### Parámetros numéricos
+
+- $\Delta$ movimiento: ${summary.deltaMove.toFixed(3)}
+- Pasos por frame: ${summary.stepsPerFrame}
+- Annealing: ${summary.annealingEnabled ? 'ON' : 'OFF'}
+- Temperatura efectiva del modelo: $T_{modelo}=${summary.modelTemperature.toFixed(4)}$
+- Campo visible: ${summary.showField ? 'ON' : 'OFF'}
+- Potencial visible: ${summary.showPotential ? 'ON' : 'OFF'}
+
+## 2) Modelo físico y criterio de aceptación
+
+$$
+U = \sum_{i<j} \frac{q_i q_j}{\lVert \mathbf{r}_i-\mathbf{r}_j \rVert}
+$$
+
+$$
+V(\mathbf{r}) = \sum_i \frac{q_i}{\lVert \mathbf{r}-\mathbf{r}_i \rVert},
+\qquad
+\mathbf{E}(\mathbf{r}) = \sum_i q_i\,\frac{\mathbf{r}-\mathbf{r}_i}{\lVert \mathbf{r}-\mathbf{r}_i \rVert^3}
+$$
+
+$$
+\mathbf{F}=q\,\mathbf{E},
+\qquad
+\Delta U = U_{nuevo} - U_{actual}
+$$
+
+Regla principal:
+
+$$
+	ext{aceptar si }\Delta U < 0
+$$
+
+Con annealing:
+
+$$
+P_{aceptar}=e^{-\Delta U/T},\quad \Delta U>0
+$$
+
+## 3) Resultados de la corrida
+
+- Energía inicial de corrida: $U_{inicio}=${summary.energyStart.toFixed(6)}$
+- Energía final de corrida: $U_{fin}=${summary.energyEnd.toFixed(6)}$
+- Cambio energético: $\Delta U=${summary.deltaEnergy.toFixed(6)}$
+- Mínimo de energía observado: $U_{min}=${summary.energyMin.toFixed(6)}$
+- Máximo de energía observado: $U_{max}=${summary.energyMax.toFixed(6)}$
+
+- Iteraciones Monte Carlo en corrida: ${summary.movesDelta}
+- Movimientos aceptados en corrida: ${summary.acceptedDelta}
+- Tasa de aceptación en corrida: ${summary.acceptanceRunPct.toFixed(3)}%
+
+### Medida de partícula de prueba
+
+- Estado de prueba al inicio: ${summary.probeWasActive ? 'activa' : 'inactiva'}
+- Tipo de prueba: ${summary.probeCharge > 0 ? 'protón (+1)' : 'electrón (-1)'}
+- Desplazamiento acumulado durante corrida: ${summary.probeDistanceDelta.toFixed(5)} u
+- Velocidad máxima durante corrida: ${summary.probeMaxSpeedRun.toFixed(5)} u/s
+
+## 4) Observación rápida
+
+Si $\Delta U<0$ global y la tasa de aceptación es moderada, el sistema avanzó hacia estados más estables bajo las condiciones impuestas.
+
+---
+
+Archivo generado automáticamente al presionar Start/Stop en ElectroSim 2D.
+`;
+}
+
+function buildRunSummary(session) {
+  const historySlice = sim.energyHistory.slice(session.energyHistoryStartIndex);
+  const energyStart = session.energyStart;
+  const energyEnd = sim.totalEnergy;
+  const energyMin = historySlice.length ? Math.min(...historySlice) : energyEnd;
+  const energyMax = historySlice.length ? Math.max(...historySlice) : energyEnd;
+  const acceptedDelta = sim.acceptedMoves - session.acceptedStart;
+  const movesDelta = sim.totalMoves - session.movesStart;
+  const durationSec = Math.max((performance.now() - session.startPerf) / 1000, 1e-6);
+
+  return {
+    startedAt: session.startedAt,
+    endedAt: new Date().toISOString(),
+    durationSec,
+    domain: DOMAIN,
+    particleCountStart: session.particleCountStart,
+    particleCountEnd: sim.count(),
+    tempC: session.tempC,
+    tempF: session.tempF,
+    tempK: session.tempK,
+    modelTemperature: session.modelTemperature,
+    deltaMove: session.deltaMove,
+    stepsPerFrame: session.stepsPerFrame,
+    annealingEnabled: session.annealingEnabled,
+    showField: session.showField,
+    showPotential: session.showPotential,
+    energyStart,
+    energyEnd,
+    deltaEnergy: energyEnd - energyStart,
+    energyMin,
+    energyMax,
+    acceptedDelta,
+    movesDelta,
+    acceptanceRunPct: movesDelta > 0 ? (100 * acceptedDelta) / movesDelta : 0,
+    probeWasActive: session.probeWasActive,
+    probeCharge: session.probeCharge,
+    probeDistanceDelta: Math.max(0, probeState.distance - session.probeDistanceStart),
+    probeMaxSpeedRun: Math.max(0, probeState.maxSpeed - session.probeMaxSpeedStart),
+  };
+}
+
+function beginRunSession() {
+  const stamp = makeTimestampTag();
+  const tempC = getTempCelsius();
+  const tempF = celsiusToFahrenheit(tempC);
+  const tempK = tempC + 273.15;
+  const modelTemperature = getTempForModel();
+
+  runSession = {
+    stamp,
+    startedAt: new Date().toISOString(),
+    startPerf: performance.now(),
+    particleCountStart: sim.count(),
+    energyStart: sim.totalEnergy,
+    energyHistoryStartIndex: sim.energyHistory.length,
+    acceptedStart: sim.acceptedMoves,
+    movesStart: sim.totalMoves,
+    tempC,
+    tempF,
+    tempK,
+    modelTemperature,
+    deltaMove: Number(deltaSlider.value),
+    stepsPerFrame: Number(speedSlider.value),
+    annealingEnabled: annealToggle.checked,
+    showField: fieldToggle.checked,
+    showPotential: potentialToggle.checked,
+    probeWasActive: probeState.active,
+    probeCharge: probeState.q,
+    probeDistanceStart: probeState.distance,
+    probeMaxSpeedStart: probeState.maxSpeed,
+  };
+
+  try {
+    startRecording(stamp);
+  } catch {
+    isRecording = false;
+    syncRecordButtonsUI();
+  }
+}
+
+function endRunSessionAndExport() {
+  if (!runSession) return;
+  const summary = buildRunSummary(runSession);
+  const report = buildRunReportMarkdown(summary);
+  const filename = `electrosim_informe_run_${runSession.stamp}.md`;
+
+  const exportMarkdown = () => {
+    downloadTextFile(filename, report, 'text/markdown;charset=utf-8');
+  };
+
+  if (isRecording) {
+    stopRecording(exportMarkdown);
+  } else {
+    exportMarkdown();
+  }
+
+  runSession = null;
 }
 
 function makeTimestampTag() {
@@ -914,25 +1125,41 @@ renderer.domElement.addEventListener('dblclick', (ev) => {
 startStopBtn.addEventListener('click', () => {
   running = !running;
   startStopBtn.textContent = running ? 'Stop' : 'Start';
+  if (running) {
+    beginRunSession();
+  } else {
+    endRunSessionAndExport();
+  }
+  syncRecordButtonsUI();
 });
 
 resetBtn.addEventListener('click', () => {
+  if (running || runSession) {
+    running = false;
+    endRunSessionAndExport();
+  }
   running = false;
   startStopBtn.textContent = 'Start';
   sim.resetRandom(50);
   resetProbe();
   updateInitialBuffers();
   fullRefresh();
+  syncRecordButtonsUI();
 });
 
 // Etapa 1: reinicia con 50 cargas todas positivas para observar repulsión pura
 resetPositiveBtn.addEventListener('click', () => {
+  if (running || runSession) {
+    running = false;
+    endRunSessionAndExport();
+  }
   running = false;
   startStopBtn.textContent = 'Start';
   sim.resetPositive(50);
   resetProbe();
   updateInitialBuffers();
   fullRefresh();
+  syncRecordButtonsUI();
 });
 
 toggleProbeBtn.addEventListener('click', () => {
@@ -950,19 +1177,29 @@ tempUnit.addEventListener('change', () => {
 });
 
 recordBtn.addEventListener('click', () => {
-  if (!isRecording) {
-    startRecording();
+  if (!running) {
+    running = true;
+    startStopBtn.textContent = 'Stop';
+    beginRunSession();
   } else {
-    stopRecording();
+    running = false;
+    startStopBtn.textContent = 'Start';
+    endRunSessionAndExport();
   }
+  syncRecordButtonsUI();
 });
 
 floatingRecordBtn.addEventListener('click', () => {
-  if (!isRecording) {
-    startRecording();
+  if (!running) {
+    running = true;
+    startStopBtn.textContent = 'Stop';
+    beginRunSession();
   } else {
-    stopRecording();
+    running = false;
+    startStopBtn.textContent = 'Start';
+    endRunSessionAndExport();
   }
+  syncRecordButtonsUI();
 });
 
 saveInitialBtn.addEventListener('click', () => {
