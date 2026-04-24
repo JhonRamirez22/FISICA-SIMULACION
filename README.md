@@ -18,3 +18,5 @@ En `outputs/` se generan:
 - `electric_field.png`
 - `energy_trace.csv`
 - `final_state.csv`
+
+# FISICA-SIMULACION
