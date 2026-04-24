@@ -294,7 +294,7 @@ $$
 ## 2) Modelo físico y criterio de aceptación
 
 $$
-U = \sum_{i<j} \frac{q_i q_j}{\sqrt{(x_i-x_j)^2 + (y_i-y_j)^2}}
+U = \sum_{i=1}^{N-1}\sum_{j=i+1}^{N}\frac{q_i q_j}{\sqrt{(x_i-x_j)^2 + (y_i-y_j)^2}}
 $$
 
 $$
@@ -312,7 +312,7 @@ $$
 Regla principal:
 
 $$
-  ext{aceptar si }\Delta U < 0
+	ext{aceptar si }\Delta U < 0
 $$
 
 Con annealing:
